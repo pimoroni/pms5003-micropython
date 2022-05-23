@@ -1,0 +1,1 @@
+Quick and dirty port of https://github.com/pimoroni/pms5003-python
