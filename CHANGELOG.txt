@@ -1,0 +1,6 @@
+v0.0.7
+------
+
+* Initial fork from pms5003-circuitpython
+* Rewrite UART IO for MicroPython
+* Rewrite GPIO for MicroPython

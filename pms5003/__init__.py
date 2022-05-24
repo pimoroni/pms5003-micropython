@@ -29,7 +29,7 @@ import time
 import machine
 
 
-__version__ = '0.0.6'
+__version__ = '0.0.7'
 
 
 PMS5003_SOF = bytearray(b'\x42\x4d')
