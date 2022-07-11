@@ -1,5 +1,5 @@
 import time
-from apms5003 import PMS5003
+from pms5003 import PMS5003
 
 print("""all.py - Continously print all data values.
 """)
