@@ -39,6 +39,8 @@ PMS5003_CMD_READ = b'\xe2\x00\x00'
 PMS5003_CMD_SLEEP = b'\xe4\x00\x00'
 PMS5003_CMD_WAKEUP = b'\xe4\x00\x01'
 
+PMSA003I_I2C_ADDR = 0x12
+
 
 class ChecksumMismatchError(RuntimeError):
     pass
@@ -65,9 +67,11 @@ class PMS5003Response:
     @classmethod
     def check_data_len(cls, raw_data_len, desc="Data"):
         if raw_data_len != cls.DATA_LEN:
-            raise FrameLengthError(desc + " too "
-                                   + ("short" if raw_data_len < cls.DATA_LEN else "long")
-                                   + " {:d} bytes".format(raw_data_len))
+            raise FrameLengthError("{} too {} {:d} bytes".format(
+                desc,
+                "short" if raw_data_len < cls.DATA_LEN else "long",
+                raw_data_len
+            ))
 
     def __init__(self, raw_data, *, frame_length_bytes):
         raw_data_len = len(raw_data)
@@ -179,7 +183,6 @@ class PMS5003():
         cmd_frame.extend(sum(cmd_frame).to_bytes(2, "big"))
         return cmd_frame
 
-
     def __init__(self,
                  uart,
                  pin_reset,
@@ -187,7 +190,8 @@ class PMS5003():
                  mode='active',
                  retries=5
                  ):
-        self._uart = uart
+        self._port = uart
+        self._serial = type(uart) is machine.UART
         self._mode = 'active'  # device starts up in active mode
 
         self._pin_enable = pin_enable
@@ -216,11 +220,14 @@ class PMS5003():
         In passive mode data frames are only sent in response to
         a read command.
         """
+        if not self._serial:
+            return
+
         self._mode = 'passive'
 
         time.sleep(self.MIN_CMD_INTERVAL)
         self._reset_input_buffer()
-        self._uart.write(self._build_cmd_frame(PMS5003_CMD_MODE_PASSIVE))
+        self._port.write(self._build_cmd_frame(PMS5003_CMD_MODE_PASSIVE))
         # In rare cases a single data frame sneaks in giving FrameLengthError
         try:
             resp = self._read_data(PMS5003CmdResponse)
@@ -235,11 +242,14 @@ class PMS5003():
         In active mode data frames are streamed continuously at intervals
         ranging from 200ms to 2.3 seconds.
         """
+        if not self._serial:
+            return
+
         self._mode = 'active'
         # mode changes with interval < 50ms break on a PMS5003
         time.sleep(self.MIN_CMD_INTERVAL)
         self._reset_input_buffer()
-        self._uart.write(self._build_cmd_frame(PMS5003_CMD_MODE_ACTIVE))
+        self._port.write(self._build_cmd_frame(PMS5003_CMD_MODE_ACTIVE))
         # In rare cases a single data frame sneaks in giving FrameLengthError
         try:
             resp = self._read_data(PMS5003CmdResponse)
@@ -247,9 +257,12 @@ class PMS5003():
             resp = self._read_data(PMS5003CmdResponse)
         time.sleep(self.MIN_CMD_INTERVAL)
         return resp
-        
+
     def _reset_input_buffer(self):
-        while self._uart.read() is not None:
+        if not self._serial:
+            return
+
+        while self._port.read() is not None:
             pass
 
     def reset(self):
@@ -284,7 +297,14 @@ class PMS5003():
     def data_available(self):
         """Returns boolean indicating if one or more data frames are waiting.
            Only for use in active mode."""
-        return self._uart.any() >= PMS5003Data.FRAME_LEN
+        if not self._serial:
+            try:
+                data = self._port.readfrom_mem(PMSA003I_I2C_ADDR, 0x00, 2)
+                return data == PMS5003_SOF
+            except OSError:
+                return False
+
+        return self._port.any() >= PMS5003Data.FRAME_LEN
 
     def read(self):
         """Read a data frame. In passive mode this will transmit a request for one.
@@ -303,44 +323,53 @@ class PMS5003():
 
     def _wait_for_bytes(self, num_bytes, timeout=MAX_RESP_TIME):
         start = time.ticks_ms()
-        while self._uart.any() < num_bytes:
+        while self._port.any() < num_bytes:
             elapsed = time.ticks_ms() - start
             if elapsed > timeout:
                 raise ReadTimeoutError("PMS5003 Read Timeout: Waiting for {} bytes!".format(num_bytes))
 
     def _read_data(self, response_class=PMS5003Data):
-        sof_index = 0
+        if self._serial:
+            sof_index = 0
 
-        while True:
-            self._wait_for_bytes(1)
+            while True:
+                self._wait_for_bytes(1)
 
-            one_byte = self._uart.read(1)
-            if one_byte is None or len(one_byte) == 0:
-                continue
+                one_byte = self._port.read(1)
+                if one_byte is None or len(one_byte) == 0:
+                    continue
 
-            if ord(one_byte) == PMS5003_SOF[sof_index]:
-                if sof_index == 0:
-                    sof_index = 1
-                elif sof_index == 1:
-                    break
-            else:
-                sof_index = 0
+                if ord(one_byte) == PMS5003_SOF[sof_index]:
+                    if sof_index == 0:
+                        sof_index = 1
+                    elif sof_index == 1:
+                        break
+                else:
+                    sof_index = 0
 
-        self._wait_for_bytes(2)
+            self._wait_for_bytes(2)
 
-        len_data = self._uart.read(2)  # Get frame length packet
-        frame_length = struct.unpack(">H", len_data)[0]
-        response_class.check_data_len(frame_length, desc="Length field")
+            len_data = self._port.read(2)  # Get frame length packet
+            frame_length = struct.unpack(">H", len_data)[0]
+            response_class.check_data_len(frame_length, desc="Length field")
 
-        self._wait_for_bytes(frame_length)
+            self._wait_for_bytes(frame_length)
 
-        raw_data = self._uart.read(frame_length)
-        return response_class(raw_data, frame_length_bytes=len_data)
+            raw_data = self._port.read(frame_length)
+            return response_class(raw_data, frame_length_bytes=len_data)
+        else:
+            try:
+                raw_data = self._port.readfrom_mem(PMSA003I_I2C_ADDR, 0x00, 32)
+            except OSError:
+                raise RuntimeError("Error reading from I2C")
+            return response_class(raw_data[4:], frame_length_bytes=raw_data[2:4])
 
     def _cmd_passive_read(self):
         """
         Sends command to request a data frame while in 'passive'
         mode and immediately reads in frame.
         """
+        if not self._serial:
+            return
         self._reset_input_buffer()
-        self._uart.write(self._build_cmd_frame(PMS5003_CMD_READ))
+        self._port.write(self._build_cmd_frame(PMS5003_CMD_READ))
