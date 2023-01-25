@@ -1,6 +1,6 @@
 {
     "urls": [
-      ["phew/__init__.py", "github:pimoroni/pms5003/pms5003/__init__.py"]
+      ["phew/__init__.py", "github:pimoroni/pms5003-micropython/pms5003/__init__.py"]
     ],
     "deps": [],
     "version": "0.0.7"
