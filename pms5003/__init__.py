@@ -116,7 +116,7 @@ class PMS5003Data(PMS5003Response):
                 return self.data[3]
             if size == 2.5:
                 return self.data[4]
-            if size == 10:
+            if size in (10, None):
                 return self.data[5]
 
         else:
